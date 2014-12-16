@@ -1,0 +1,153 @@
+#!/usr/bin/env python
+
+"""
+Active Robots, Baxter Training Example
+"""
+
+import rospy
+import math
+import roslib
+
+roslib.load_manifest('training') #we load the manifest of the package we are in
+import baxter_interface
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge, CvBridgeError
+import cv
+from moveit_commander import MoveGroupCommander
+
+#callback function for camera subscriber, called by the camera subscriber for every frame.
+def callback(data):
+
+  #Republish the camera stream to the screen
+  rospy.Publisher('/robot/xdisplay',Image).publish(data)
+  
+  #Convert incoming image from a ROS image message to a CV image that open CV can process.
+  cv_image = CvBridge().imgmsg_to_cv(data, "bgr8")
+  
+  #Display the converted cv image, this is the raw camera feed data.
+  cv.ShowImage("Raw Camera Feed", cv_image)
+  
+  #Create an empty image variable, the same dimensions as our camera feed.
+  gray = cv.CreateImage((cv.GetSize(cv_image)), 8, 1)
+  
+  #Into this previously created empty image variable, place the grayscale conversion of our camera feed.
+  cv.CvtColor(cv_image,gray,cv.CV_BGR2GRAY)
+  
+  #Display the grayscale image.
+  cv.ShowImage("Grayscale Conversion", gray)
+  
+  #Create another empty image variable.
+  canny = cv.CreateImage((cv.GetSize(cv_image)), 8, 1)
+  
+  #Fill the new image variable with a canny edge detection map of the greyscale image created earlier.
+  cv.Canny(gray, canny, 50, 150, 3)
+  
+  #Display the canny mapping.
+  cv.ShowImage("Canny Edge Detection", canny)
+  
+  #3ms wait
+  cv.WaitKey(3)
+  
+if __name__ == '__main__':
+  rospy.init_node('activerobots_baxter_training_example', anonymous=True)
+
+#create subscriber to the right hand camera, each frame recieved calls the callback function
+camera_sub = rospy.Subscriber("/cameras/right_hand_camera/image",Image,callback)
+
+#Reading Sensors
+#read joint angles
+print baxter_interface.Limb('right').joint_angles()
+#read button state
+print baxter_interface.digital_io.DigitalIO('right_lower_button').state
+#read IR rangefinder
+print baxter_interface.analog_io.AnalogIO('right_hand_range').state()
+
+#Writing to actuators
+#define pi so we can use radians easily
+pi = math.pi
+#Enable the actuators
+baxter_interface.RobotEnable().enable()
+
+#send joint positions in radians
+baxter_interface.Limb('right').move_to_joint_positions({
+                                                        'right_s0': 0.0,
+                                                        'right_s1': 0.0,
+                                                        'right_e0': 0.0,
+                                                        'right_e1': 0.0,
+                                                        'right_w0': 0.0,
+                                                        'right_w1': 0.0,
+                                                        'right_w2': 0.0 })
+baxter_interface.Limb('right').move_to_joint_positions({
+                                                        'right_s0': 0.0,
+                                                        'right_s1': 0.0,
+                                                        'right_e0': pi/2,
+                                                        'right_e1': pi/2,
+                                                        'right_w0': 0.0,
+                                                        'right_w1': 0.0,
+                                                        'right_w2': -pi/2 })
+baxter_interface.Limb('right').move_to_joint_positions({
+                                                        'right_s0': -pi/4,
+                                                        'right_s1': -pi/4,
+                                                        'right_e0': 0.0,
+                                                        'right_e1': 3*pi/4,
+                                                        'right_w0': 0.0,
+                                                        'right_w1': 0.0,
+                                                        'right_w2': 0.0 })
+                                                        
+#check if gripper is calibrated, if not, reboot it and calibrate
+if baxter_interface.Gripper('right').calibrated() == False:
+baxter_interface.Gripper('right').reboot()
+baxter_interface.Gripper('right').calibrate()
+
+#open gripper
+baxter_interface.Gripper('right').open()
+rospy.sleep(1)
+
+#close gripper
+baxter_interface.Gripper('right').close()
+rospy.sleep(1)
+
+#open gripper
+baxter_interface.Gripper('right').open()
+rospy.sleep(1)
+
+#Lets do some IK
+
+#define a variable to address the right arm planning interface via MoveIt
+ik_right = MoveGroupCommander("right_arm")
+# X Y Z R P Y
+# f/b l/r u/d
+# | metres |radians|
+#pose = [0.8, -0.4, 0.4, 0, 0, 0]
+pose = [0.3, -0.7, 0.4, pi, 0, pi]
+
+#alternative pose formats include: Pose message, PoseStamped message,
+#list of 6 floats [x, y, z, rot_x, rot_y, rot_z] or a list of 7 floats [x, y, z, qx, qy, qz, qw]
+
+
+#send the pose to the IK solver in moveit via movegroupcommander and calculate relative to the end-effector
+ik_right.set_pose_target(pose, ik_right.get_end_effector_link())
+
+#execute the trajectory that was planned
+ik_right.go()
+
+#print some sensor readings
+print baxter_interface.Limb('right').joint_angles() #radians
+print baxter_interface.Limb('right').joint_efforts() #Nm
+
+#move the arm downwards in the same x/y position until the IR rangefinder reaches threshold
+#this is a very quick and dirty implementation and serves only to show arm/sensor interaction
+#if you wanted to do this in a real environment you wouldnt implement it as a single loop!!!
+while baxter_interface.analog_io.AnalogIO('right_hand_range').state() > 375 and pose[2] > -0.4:
+  pose[2] += -0.05
+  print pose
+  print baxter_interface.analog_io.AnalogIO('right_hand_range').state()
+  ik_right.set_pose_target(pose, ik_right.get_end_effector_link())
+  ik_right.go()
+else:
+  print baxter_interface.analog_io.AnalogIO('right_hand_range').state()
+
+print "ended, now spinning, Ctrl-c to exit"
+#prevents program from exiting, allowing subscribers and publishers to keep operating
+#in our case that is the camera subscriber and the image processing callback function
+rospy.spin()
